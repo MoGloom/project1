@@ -1,0 +1,241 @@
+#!/bin/sh
+#
+# A shell script to change
+#  .odt .docx .doc .rtf .rtfd .wordml files
+#  into renpy-compatible .rpy text files.
+#
+# NOTE: might need to configure how to change special characters in
+#   these files into .txt
+
+# CONFIGURATION
+
+# LibreOffice is free at libreoffice.org
+# It's used to convert various files to UTF8 text files for renpy
+
+# Put the path to run LibreOffice here:
+# Detect OS
+if test "$OSTYPE" = "darwin14"
+then
+  # Mac OS/X
+  libre='/Applications/LibreOffice.app/Contents/MacOS/soffice'
+else
+  # PC
+  libre='C:\\Program Files\\LibreOffice 4\\program\\soffice.exe'
+fi
+
+# This assumes LibreOffice changes the extent to .txt and puts it in the local dir, which is $midfile
+to_txt='$libre --headless --convert-to "txt:Text (encoded):UTF8" "$file" > /dev/null ; cat "$midfile" | sed "1,1s/^.//" > "$textfile" ; rm "$midfile" '
+
+# If you can't get the above to work, just convert .docx etc files to .txt and make to_txt just copy the file:
+# to_txt='cat "$file" > "$textfile"'
+
+# This also works, but for MAC OS/X only
+# to_txt='textutil -convert txt -stdout "$file" > "$textfile"'
+
+#
+# usage: s2r [-q] [files dirs]
+#  Default is to recursively go through all files in
+#   all subdirectories named "a<number>_<number><anything>"
+#   that are in a folder named 'Scenes*' and generate text
+#   files named renpy/script_*.rpy (ignoring case)
+#   -q = quiet mode, don't list filenames
+#
+# For automated conversion, renpy commands can be added to a *.fix.txt
+#   file for each script file.
+# Lines that contain < or > will be checked for substitutions
+# Any lines that aren't found are appended to *.needfix.txt
+# 
+
+# Create renpy directory if absent
+if test ! -d renpy
+then
+  echo Creating renpy folder >&2
+  mkdir -p renpy
+fi
+
+# quiet mode?
+quiet=f
+if test "$1" = "-q"
+then
+  quiet=t
+  shift
+fi
+
+# Get list of files, or generate it
+if test -n "$1"
+then
+  list="`find \"$@\" -name '[Aa][0-9]*_[0-9]*.odt' -o -name '[Aa][0-9]*_[0-9]*.docx' -o -name '[Aa][0-9]*_[0-9]*.doc' -o -name '[Aa][0-9]*_[0-9]*.rtf' -o -name '[Aa][0-9]*_[0-9]*.rtfs' -o -name '[Aa][0-9]*_[0-9]*.wordml' -o -name '[Aa][0-9]*_[0-9]*.txt' | sed 's/ /xxSPACExx/g'`"
+else
+  dolist=f
+  list="`find . -name '[Aa][0-9]*_[0-9]*.odt' -o -name '[Aa][0-9]*_[0-9]*.docx' -o -name '[Aa][0-9]*_[0-9]*.doc' -o -name '[Aa][0-9]*_[0-9]*.rtf' -o -name '[Aa][0-9]*_[0-9]*.rtfs' -o -name '[Aa][0-9]*_[0-9]*.wordml' -o -name '[Aa][0-9]*_[0-9]*.txt' | sed 's/ /xxSPACExx/g'`"
+fi
+
+# Go through the list and convert each file
+for rawfile in $list
+do
+  inscenefolder="`echo $rawfile | sed 's|[Ss][Cc][Ee][Nn][Ee].*/||g'`"
+
+  # Only do this for files inside a folder named "scene*", or for explicit filenames
+  if test "$inscenefolder" != "$rawfile" -o "$dolist" = "t"
+  then
+    file="`echo $rawfile | sed 's/xxSPACExx/ /g'`"
+    outfile="`echo $rawfile | sed -e 's|^[.]/||' -e 's/xxSPACExx/ /g' -e 's/odt$/rpy/g' -e 's/docx$/rpy/g' -e 's/doc$/rpy/g' -e 's/rtf$/rpy/g' -e 's/rtfd$/rpy/g' -e 's/wordml$/rpy/g'`"
+    midfile="`basename $rawfile | sed -e 's|^[.]/||' -e 's/xxSPACExx/ /g' -e 's/odt$/txt/g' -e 's/docx$/txt/g' -e 's/doc$/txt/g' -e 's/rtf$/txt/g' -e 's/rtfd$/txt/g' -e 's/wordml$/txt/g'`"
+    outfile="renpy/$outfile"
+  
+    if test "$quiet" = "f"
+    then
+      echo "Converting '$file' to '$outfile'" >&2
+    fi
+
+    # Create subdirs if needed
+    mkdir -p "`dirname \"$outfile\"`"
+    basename="`basename \"$outfile\"`"
+  
+    # Check if overwriting existing output file, move if it exists and print msg
+    if test -s "$outfile"
+    then
+      oldtime="`stat -f %c \"$outfile\"`"
+      suffix="`date -r $oldtime +%Y-%m-%d-%H%M.old`"
+      echo file "$outfile" exists, renamed to "$basename.$suffix" >&2
+      mv "$outfile" "$outfile.$suffix"
+    fi
+    textfile="$outfile.txt"
+
+    fixfile="$file.fix.txt"
+    needfixfile="$file.needfix.txt"
+    rm -f "$needfixfile"
+
+    # First, convert to type .txt, or just copy it
+    eval $to_txt
+    
+    # Change oddball unicode characters
+    # <2028> (line separator) and <200F> right-to-left mark into newlines
+    perl -p -e 's/\xe2\x80\xa8/\n/g' < "$textfile" > tmp
+    mv tmp "$textfile"
+    perl -p -e 's/\xe2\x80\x8f/\n/g' < "$textfile" > tmp
+    mv tmp "$textfile"
+  
+    # Go through each line, try to figure out:
+    # When comments end and actual script beings
+    # change:
+    # Erik: "hi"  -->  erik  "hi"
+    # Erik leaves  -->   "Erik leaves"
+    # Also fix " in text that ends up inside ""
+    # Put comments into renpy # comments
+    # Put stage directions into "TODO xxx" text for now
+    # Later, change stage directions into renpy commands
+    
+    # Comments end at:
+    # first <something> line
+
+    # Look at the first few lines to try and figure out if there are comments
+    # <> within first few lines = start there
+    # lone ~ = start after
+    # Trim any first nonblank line that starts "A<number>" or "scene"
+    # Big line of =============, start after
+    # Big line of -------------, start after
+
+    head -50 "$textfile" > headfile
+
+    # Look for <asdf> or lone ~
+    startat="`grep -n -m1 '^<' headfile 2> /dev/null`"
+    if test "$startat" = ""
+    then
+      startat="`grep -n -m1 '^\s*\~\s*$' headfile 2> /dev/null`"
+    fi
+
+    if test "$startat" = ""
+    then
+      echo "No <scene setting> found for file $outfile" >&2
+    fi
+
+    # Trim any leftover grep string
+    startat="`echo $startat | sed 's/:.*$//g'`"
+
+    if test "$startat" = ""
+    then
+      startat=1
+    fi
+
+    rm headfile
+
+    curline=0
+    while read line
+    do
+      # Check for lines that should be comments
+      # Any line before $startat
+      curline="`echo $curline + 1 | bc`"
+      if test $curline -lt $startat
+      then
+        echo "# $line" >> "$outfile"
+      else
+        # A scene number like A<number>_foo
+        # A line with a lot of -------- or =========
+        cmp="`echo \"$line\" | grep -e '-------------------' -e '===============' -e '^[Aa][0-9]*_'`"
+        if test "$cmp" != ""
+        then
+          echo "# $line" >> "$outfile"
+        else
+          # change:
+          # Any <scene> or >>text
+          # Erik: "hi"  -->  erik  "hi"
+          # Erik leaves  -->   "Erik leaves"
+          # Also fix " in text that ends up inside ""
+          person="`echo \"$line\" | sed -n 's/^\([A-Za-z]*\): .*$/\1/gp'`"
+          if test "$person" = ""
+          then
+            text="$line"
+            if echo "$line" | grep -q '[<>]'
+            then
+              if test -e "$fixfile"
+              then
+                line2=`echo "$line" | tr '*@!\\\$/[]{}()&' '.............'`
+                subtext="`sed -n \"/$line2/,/EOF/p\" \"$fixfile\" | tail +2 | sed 's/^EOF$//'`"
+                if test "$subtext" != ""
+                then
+                  echo "$subtext" >> "$outfile"
+                  continue
+                fi
+              fi
+              echo "$line" >> "$needfixfile"
+            fi
+          else
+            text="`echo \"$line\" | sed -n 's/^[A-Za-z]*: *\(.*\)$/\1/gp'`"
+            person="`echo $person | tr '[A-Z]' '[a-z]'`"
+          fi
+          #
+          # Trim trailing blanks and oddball " to std
+          # If person, trim first/last "
+          # Fix " within text
+          #
+          text="`echo \"$text\" | sed -e 's/ *$//' -e 's/[“”]/"/g'`"
+          if test "$person" != ""
+          then
+            text="`echo \"$text\" | sed -e 's/^\s*"//' -e 's/"\s*$//'`"
+          fi
+          text="`echo \"$text\" | sed -e 's/"/\\\\"/g'`"
+          if test "$text" = ""
+          then
+            echo >> "$outfile"
+          else
+            if test "$person" = ""
+            then
+              echo "\"$text\"" >> "$outfile"
+            else
+              echo "$person \"$text\"" >> "$outfile"
+            fi
+          fi
+        fi
+      fi
+    done <"$textfile"
+
+    # interior lines to put into comments
+    # lots of -------- or =====
+    # short with ALL CAPS + "in" or "out"
+    # 
+
+    rm "$textfile"
+
+  fi
+done
