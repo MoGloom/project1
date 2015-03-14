@@ -1,0 +1,1 @@
+Important Note: This animation runs at 30 FPS, while the rest of the menu should be running at 60 FPS. I did this because there are no fades or fast enough motion that 60 FPS would make a difference.
