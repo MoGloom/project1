@@ -162,6 +162,9 @@ label start0:
 
   define Voice = Character('Voice', color="#9d9d9d")
 
+  #backgrounds
+  image bg car_interior = im.Scale("backgrounds/car_interior.jpg", 1280, 720)
+
   image bg black="#000000"
   scene bg black
   with fade

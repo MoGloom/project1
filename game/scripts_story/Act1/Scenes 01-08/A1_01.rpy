@@ -30,6 +30,9 @@ label A1_01:
 # car door opening
 # door opening
 #
+
+scene bg car_interior with fade
+
 "<Intro movie – end on the starry sky, pan down to the road and through rear passenger side window of a car>"
 
 "<movie music continues to play a short ways into this scene, fading out a couple lines in (followed by only the ambient sounds of the car)>"
